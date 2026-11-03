@@ -35,12 +35,42 @@ DRAFT_SYSTEM = (
 UNANSWERABLE_FILE = Path(__file__).with_name("unanswerable.txt")
 
 
-def _retrieval_candidates(con, n: int, seed: int, llm, allow_template: bool) -> list[dict]:
+def _eligible_rows(con, seed: int) -> list[tuple]:
     rows = con.execute(
         "SELECT complaint_id, product_group, issue, company, narrative FROM complaints "
-        "WHERE n_words BETWEEN 40 AND 250 AND xxxx_ratio < 0.08"
+        "WHERE n_words BETWEEN 40 AND 250 AND xxxx_ratio < 0.08 ORDER BY complaint_id"
     ).fetchall()
     random.Random(seed).shuffle(rows)
+    return rows
+
+
+def export_for_drafting(con, n: int, seed: int, path: Path) -> int:
+    """Write n sampled complaints (balanced across product groups) so questions can be drafted
+    outside this program, for example by pasting the file to Claude in a chat."""
+    by_group: dict[str, list[tuple]] = {}
+    for r in _eligible_rows(con, seed):
+        by_group.setdefault(r[1], []).append(r)
+    per = max(1, n // max(1, len(by_group)))
+    chosen = [r for g in sorted(by_group) for r in by_group[g][:per]]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        for cid, pg, issue, company, narrative in chosen:
+            f.write(json.dumps({"id": str(cid), "product": pg, "issue": issue,
+                                "company": company, "complaint": narrative[:1500]}) + "\n")
+    return len(chosen)
+
+
+def _drafted_candidates(drafted: dict[str, str]) -> list[dict]:
+    out = []
+    for cid, q in drafted.items():
+        if isinstance(q, str) and len(q.strip()) > 15:
+            out.append({"id": f"r{len(out) + 1:03d}", "type": "retrieval", "question": q.strip(),
+                        "gold_ids": [str(cid)], "verified": False, "source": "drafted_externally"})
+    return out
+
+
+def _retrieval_candidates(con, n: int, seed: int, llm, allow_template: bool) -> list[dict]:
+    rows = _eligible_rows(con, seed)
     out = []
     for cid, pg, issue, company, narrative in rows:
         if len(out) >= n:
@@ -116,11 +146,33 @@ def main(argv=None):
                     help="Fallback templated questions when no LLM is available (smoke tests only)")
     ap.add_argument("--auto-verify", action="store_true",
                     help="Mark retrieval candidates verified without review (smoke tests / CI only)")
+    ap.add_argument("--export-complaints", type=int, metavar="N", default=None,
+                    help="No API key? Write N sampled complaints to --export-path, get questions "
+                         "drafted elsewhere, then pass them back with --drafted")
+    ap.add_argument("--export-path", type=Path, default=Path("eval/to_draft.jsonl"))
+    ap.add_argument("--drafted", type=Path, default=None,
+                    help='JSONL of {"id": <complaint id>, "question": <text>} replacing the LLM drafting step')
     args = ap.parse_args(argv)
 
     con = duckdb.connect(str(args.db), read_only=True)
-    llm = get_llm(args.llm)
-    items = _retrieval_candidates(con, args.n_retrieval, args.seed, llm, args.allow_template)
+    if args.export_complaints:
+        n = export_for_drafting(con, args.export_complaints, args.seed, args.export_path)
+        print(f"Wrote {n} complaints to {args.export_path}")
+        return
+    if args.drafted:
+        drafted = {}
+        for line in args.drafted.read_text().splitlines():
+            if line.strip():
+                d = json.loads(line)
+                drafted[str(d["id"])] = d["question"]
+        known = {str(r[0]) for r in con.execute("SELECT complaint_id FROM complaints").fetchall()}
+        missing = [c for c in drafted if c not in known]
+        if missing:
+            raise SystemExit(f"{len(missing)} drafted ids are not in the database, e.g. {missing[:3]}")
+        items = _drafted_candidates(drafted)
+    else:
+        llm = get_llm(args.llm)
+        items = _retrieval_candidates(con, args.n_retrieval, args.seed, llm, args.allow_template)
     items += _aggregate_items(con, args.n_aggregate, args.seed)
     items += _unanswerable_items()
     if args.auto_verify:

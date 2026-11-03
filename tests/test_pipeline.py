@@ -80,3 +80,25 @@ def test_metrics():
     exp = [{"group_value": "A", "n": 5}, {"group_value": "B", "n": 3}]
     assert M.aggregate_match(exp, exp)["full"]
     assert not M.aggregate_match(exp, [{"group_value": "A", "n": 4}])["top1"]
+
+
+def test_goldset_export_and_drafted_roundtrip(tmp_path, env):
+    import json
+    from cfpb_rag.eval import build_goldset
+
+    exp = tmp_path / "to_draft.jsonl"
+    build_goldset.main(["--db", str(env["db"]), "--export-complaints", "10", "--export-path", str(exp)])
+    rows = [json.loads(line) for line in exp.read_text().splitlines()]
+    assert len(rows) == 10 and {"id", "complaint", "issue"} <= set(rows[0])
+
+    drafted = tmp_path / "drafted.jsonl"
+    drafted.write_text("\n".join(
+        json.dumps({"id": r["id"], "question": f"Who complained about {r['issue'].lower()} at length?"})
+        for r in rows))
+    out = tmp_path / "cand.jsonl"
+    build_goldset.main(["--db", str(env["db"]), "--drafted", str(drafted), "--out", str(out),
+                        "--n-aggregate", "3"])
+    items = [json.loads(line) for line in out.read_text().splitlines()]
+    retr = [i for i in items if i["type"] == "retrieval"]
+    assert len(retr) == 10 and all(not i["verified"] for i in retr)
+    assert {i["gold_ids"][0] for i in retr} == {r["id"] for r in rows}
