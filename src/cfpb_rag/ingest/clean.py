@@ -115,11 +115,14 @@ def build_database(
     seed: int = 7,
     chunksize: int = 200_000,
     progress: bool = False,
+    balance: bool = True,
 ) -> dict:
     """Filter the raw file to the project slice and write a `complaints` table.
 
     If max_rows is set, a uniform random sample of that size is kept. Sampling happens while
     streaming (random keys, keep the smallest), so memory stays bounded on the full dataset.
+    With balance=True the sample is stratified: each product group gets an equal share of
+    max_rows (or all it has, if fewer), so a huge group cannot crowd out a small one.
     """
     csv_path = Path(csv_path)
     check_columns(csv_path)
@@ -144,8 +147,14 @@ def build_database(
     pooled = 0
     kept_total = 0
 
+    available: dict[str, int] = {}
+
     def shrink(frames: list[pd.DataFrame]) -> list[pd.DataFrame]:
         df = pd.concat(frames, ignore_index=True)
+        if balance and len(groups) > 1:
+            quota = max_rows // len(groups)
+            parts = [g.nsmallest(quota, "_k") for _, g in df.groupby("product_group")]
+            return [pd.concat(parts, ignore_index=True)]
         return [df.nsmallest(max_rows, "_k")]
 
     for n_chunk, chunk in enumerate(_iter_chunks(csv_path, chunksize), start=1):
@@ -192,6 +201,8 @@ def build_database(
         seen_text.update(hashes[keep])
 
         if len(chunk):
+            for g, c in chunk["product_group"].value_counts().items():
+                available[g] = available.get(g, 0) + int(c)
             kept_total += len(chunk)
             if max_rows:
                 chunk = chunk.assign(_k=rng.random(len(chunk)))
@@ -209,8 +220,10 @@ def build_database(
         )
     df = shrink(pool)[0] if max_rows else pd.concat(pool, ignore_index=True)
     report["rows_after_cleaning"] = kept_total
-    if max_rows and kept_total > max_rows:
+    report["available_by_product_group"] = available
+    if max_rows and kept_total > len(df):
         report["sampled_down_from"] = kept_total
+        report["sampling"] = "stratified by product group" if balance and len(groups) > 1 else "uniform"
     df = df.drop(columns=["_k"], errors="ignore")
 
     df["xxxx_ratio"] = df["narrative"].map(

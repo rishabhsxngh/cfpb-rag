@@ -82,3 +82,13 @@ def test_parquet_with_timezone_aware_dates(csv, tmp_path):
     b = build_database(d, tmp_path / "b.duckdb")
     assert a["rows_final"] == b["rows_final"]
     assert a["profile"]["date_min"] == b["profile"]["date_min"]
+
+
+def test_balanced_sampling_gives_each_group_an_equal_share(csv, tmp_path):
+    rep = build_database(csv, tmp_path / "b.duckdb", max_rows=100, chunksize=150)
+    con = duckdb.connect(str(tmp_path / "b.duckdb"), read_only=True)
+    counts = dict(con.execute("SELECT product_group, COUNT(*) FROM complaints GROUP BY 1").fetchall())
+    assert set(counts.values()) == {50}
+    assert sum(rep["available_by_product_group"].values()) == rep["rows_after_cleaning"]
+    rep2 = build_database(csv, tmp_path / "u.duckdb", max_rows=100, chunksize=150, balance=False)
+    assert rep2["sampling"] == "uniform"

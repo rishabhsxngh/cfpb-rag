@@ -28,6 +28,8 @@ def main(argv=None) -> None:
     i.add_argument("--since", default=DEFAULT_SINCE)
     i.add_argument("--min-words", type=int, default=20)
     i.add_argument("--max-rows", type=int, default=None)
+    i.add_argument("--no-balance", action="store_true",
+                   help="sample uniformly instead of equal shares per product group")
 
     x = sub.add_parser("index", help="Build the embedding + BM25 index")
     x.add_argument("--embedder", default=DEFAULT_EMBEDDER)
@@ -62,8 +64,9 @@ def main(argv=None) -> None:
                              "(run `cfpb-rag download` for instructions) or pass --csv.")
         print(f"Reading {src} (this can take several minutes on the full dataset)...")
         rep = build_database(src, DB_PATH, [g.strip() for g in args.products.split(",")],
-                             args.since, args.min_words, args.max_rows, progress=True)
-        print(json.dumps({k: rep[k] for k in ("rows_read", "dropped", "rows_final", "profile")}, indent=2))
+                             args.since, args.min_words, args.max_rows, progress=True,
+                             balance=not args.no_balance)
+        print(json.dumps({k: rep[k] for k in ("rows_read", "dropped", "available_by_product_group", "rows_final", "profile")}, indent=2))
     elif args.cmd == "index":
         from .index.store import build_index
         print(json.dumps(build_index(DB_PATH, args.index_dir, args.embedder,
