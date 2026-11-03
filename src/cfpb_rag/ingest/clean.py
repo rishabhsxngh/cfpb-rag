@@ -1,7 +1,10 @@
-"""Load the raw CFPB CSV into DuckDB with explicit quality checks.
+"""Load the raw CFPB CSV (or the .zip of it) into DuckDB with explicit quality checks.
 
 Every row that is dropped is counted by reason, and the counts are written to
 a JSON quality report next to the database so the cleaning is auditable.
+
+The input can be the plain CSV or the zip from CFPB's "All complaint data"
+download. A zip is streamed directly, so it never has to be unzipped to disk.
 """
 from __future__ import annotations
 
@@ -10,6 +13,7 @@ import re
 from pathlib import Path
 
 import duckdb
+import numpy as np
 import pandas as pd
 
 from ..config import DEFAULT_PRODUCT_GROUPS, DEFAULT_SINCE
@@ -26,18 +30,25 @@ COLMAP = {
     "Company response to consumer": "company_response",
     "Complaint ID": "complaint_id",
 }
+REQUIRED = ["Date received", "Product", "Issue", "Consumer complaint narrative",
+            "Company", "Complaint ID"]
 
 # CFPB redacts personal details as runs of X (e.g. "XXXX", "XX/XX/2024").
 _REDACTION_RE = re.compile(r"X{2,}")
 _WS_RE = re.compile(r"\s+")
 
 
-def _group_for(product: str, groups: list[str]) -> str | None:
-    p = (product or "").lower()
-    for g in groups:
-        if g.lower() in p:
-            return g
-    return None
+def check_columns(csv_path: Path) -> None:
+    """Fail early, with a useful message, if the file cannot support the project."""
+    header = list(pd.read_csv(csv_path, nrows=0).columns)
+    missing = [c for c in REQUIRED if c not in header]
+    if missing:
+        hint = ""
+        if "Consumer complaint narrative" in missing:
+            hint = ("\nThis file has no complaint narratives, and the project searches "
+                    "narrative text. The filtered 'Export data' CSV on the CFPB site may omit "
+                    "them; use the full 'All complaint data' zip instead.")
+        raise ValueError(f"{csv_path} is missing required column(s): {missing}.{hint}")
 
 
 def build_database(
@@ -49,10 +60,18 @@ def build_database(
     max_rows: int | None = None,
     seed: int = 7,
     chunksize: int = 200_000,
+    progress: bool = False,
 ) -> dict:
-    """Filter the raw CSV to the project slice and write a `complaints` table."""
+    """Filter the raw file to the project slice and write a `complaints` table.
+
+    If max_rows is set, a uniform random sample of that size is kept. Sampling happens while
+    streaming (random keys, keep the smallest), so memory stays bounded on the full dataset.
+    """
+    csv_path = Path(csv_path)
+    check_columns(csv_path)
     groups = product_groups or DEFAULT_PRODUCT_GROUPS
     since_ts = pd.Timestamp(since)
+    rng = np.random.default_rng(seed)
     report: dict = {
         "slice": {"product_groups": groups, "since": since, "min_words": min_words},
         "rows_read": 0,
@@ -67,7 +86,13 @@ def build_database(
     }
     seen_ids: set[str] = set()
     seen_text: set[int] = set()
-    frames: list[pd.DataFrame] = []
+    pool: list[pd.DataFrame] = []
+    pooled = 0
+    kept_total = 0
+
+    def shrink(frames: list[pd.DataFrame]) -> list[pd.DataFrame]:
+        df = pd.concat(frames, ignore_index=True)
+        return [df.nsmallest(max_rows, "_k")]
 
     reader = pd.read_csv(
         csv_path,
@@ -76,12 +101,17 @@ def build_database(
         chunksize=chunksize,
         keep_default_na=False,
     )
-    for chunk in reader:
+    for n_chunk, chunk in enumerate(reader, start=1):
         chunk = chunk.rename(columns=COLMAP)
         report["rows_read"] += len(chunk)
 
-        chunk["product_group"] = chunk["product"].map(lambda p: _group_for(p, groups))
+        prod_lower = chunk["product"].str.lower()
+        group = pd.Series(None, index=chunk.index, dtype=object)
+        for g in groups:  # first matching group wins
+            hit = group.isna() & prod_lower.str.contains(g.lower(), regex=False)
+            group[hit] = g
         n = len(chunk)
+        chunk = chunk.assign(product_group=group)
         chunk = chunk[chunk["product_group"].notna()]
         report["dropped"]["outside_product_slice"] += n - len(chunk)
 
@@ -114,29 +144,39 @@ def build_database(
         seen_text.update(hashes[keep])
 
         if len(chunk):
-            frames.append(chunk)
+            kept_total += len(chunk)
+            if max_rows:
+                chunk = chunk.assign(_k=rng.random(len(chunk)))
+            pool.append(chunk)
+            pooled += len(chunk)
+            if max_rows and pooled > 2 * max_rows:
+                pool = shrink(pool)
+                pooled = len(pool[0])
+        if progress and n_chunk % 5 == 0:
+            print(f"  read {report['rows_read']:,} rows, kept {kept_total:,}", flush=True)
 
-    if not frames:
+    if not pool:
         raise ValueError(
-            "No rows matched the slice. Check product groups, the --since date, and the CSV path."
+            "No rows matched the slice. Check product groups, the --since date, and the file."
         )
-    df = pd.concat(frames, ignore_index=True)
-    report["rows_after_cleaning"] = len(df)
+    df = shrink(pool)[0] if max_rows else pd.concat(pool, ignore_index=True)
+    report["rows_after_cleaning"] = kept_total
+    if max_rows and kept_total > max_rows:
+        report["sampled_down_from"] = kept_total
+    df = df.drop(columns=["_k"], errors="ignore")
 
     df["xxxx_ratio"] = df["narrative"].map(
         lambda s: len(_REDACTION_RE.findall(s)) / max(1, len(s.split()))
     )
-
-    if max_rows and len(df) > max_rows:
-        report["sampled_down_from"] = len(df)
-        df = df.sample(n=max_rows, random_state=seed).reset_index(drop=True)
-
     df = df.sort_values("complaint_id").reset_index(drop=True)
     cols = [
         "complaint_id", "date_received", "product", "product_group", "sub_product",
         "issue", "sub_issue", "company", "state", "company_response",
         "narrative", "n_words", "xxxx_ratio",
     ]
+    for c in cols:  # optional columns can be absent from some exports
+        if c not in df.columns:
+            df[c] = ""
     df = df[cols]
 
     report["rows_final"] = len(df)

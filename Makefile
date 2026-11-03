@@ -3,10 +3,12 @@
 install:
 	pip install -e ".[st,app,dev]"
 
-# Real data (needs internet access to files.consumerfinance.gov)
+# Real data. CFPB may refuse scripted downloads (HTTP 403): if `cfpb-rag download` says so,
+# download "All complaint data" in a browser and save it as data/raw/complaints.csv.zip first.
+# The zip is read directly (no unzipping), and --max-rows keeps a 60k random sample.
 data:
 	cfpb-rag download
-	cfpb-rag ingest --products "Mortgage,Credit reporting" --since 2024-01-01
+	cfpb-rag ingest --products "Mortgage,Credit reporting" --since 2024-01-01 --max-rows 60000
 
 index:
 	cfpb-rag index

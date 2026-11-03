@@ -20,7 +20,8 @@ def main(argv=None) -> None:
     sub.add_parser("download", help="Download the real CFPB complaint CSV")
 
     i = sub.add_parser("ingest", help="Clean the CSV into DuckDB and write a quality report")
-    i.add_argument("--csv", type=Path, default=RAW_DIR / "complaints.csv")
+    i.add_argument("--csv", type=Path, default=None,
+                   help="CSV or the CFPB .zip (default: data/raw/complaints.csv.zip or .csv)")
     i.add_argument("--products", default=",".join(DEFAULT_PRODUCT_GROUPS))
     i.add_argument("--since", default=DEFAULT_SINCE)
     i.add_argument("--min-words", type=int, default=20)
@@ -48,8 +49,14 @@ def main(argv=None) -> None:
         download()
     elif args.cmd == "ingest":
         from .ingest.clean import build_database
-        rep = build_database(args.csv, DB_PATH, [g.strip() for g in args.products.split(",")],
-                             args.since, args.min_words, args.max_rows)
+        src = args.csv or next(
+            (p for p in (RAW_DIR / "complaints.csv.zip", RAW_DIR / "complaints.csv") if p.exists()), None)
+        if src is None:
+            raise SystemExit(f"No input file found. Put the CFPB zip at {RAW_DIR / 'complaints.csv.zip'} "
+                             "(run `cfpb-rag download` for instructions) or pass --csv.")
+        print(f"Reading {src} (this can take several minutes on the full dataset)...")
+        rep = build_database(src, DB_PATH, [g.strip() for g in args.products.split(",")],
+                             args.since, args.min_words, args.max_rows, progress=True)
         print(json.dumps({k: rep[k] for k in ("rows_read", "dropped", "rows_final", "profile")}, indent=2))
     elif args.cmd == "index":
         from .index.store import build_index

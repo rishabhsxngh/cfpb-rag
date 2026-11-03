@@ -24,7 +24,7 @@ Requires Python 3.10+.
 
 ```bash
 make install                 # pip install -e ".[st,app,dev]"
-make data                    # download real CFPB data and clean it into DuckDB (needs internet)
+make data                    # real CFPB data -> DuckDB (if the download is refused, see "Getting the data")
 make index                   # build the embedding + BM25 index
 export ANTHROPIC_API_KEY=...  # optional; without it a deterministic test stub is used (see below)
 cfpb-rag ask "Which issue is most common for Mortgage complaints?"
@@ -33,6 +33,16 @@ make app                     # Streamlit UI
 ```
 
 No internet or key? `make sample` builds a **synthetic** dataset so you can try the pipeline end to end. Never report numbers from synthetic data as results.
+
+### Getting the data
+
+CFPB's file server may refuse scripted downloads (HTTP 403), so the reliable route is a browser:
+
+1. Open the [complaint search tool](https://www.consumerfinance.gov/data-research/consumer-complaints/) and click **Export data**.
+2. Choose **All complaint data** (CSV ZIP) and save it as `data/raw/complaints.csv.zip`. It is a large file (several GB), and it stays zipped: ingestion reads the zip directly.
+3. `cfpb-rag ingest --max-rows 60000` filters to Mortgage and Credit reporting complaints that have narratives and keeps a reproducible random sample of 60,000.
+
+Do not use the **filtered** export: it is capped at 100,000 complaints and the file we tried had no narrative column, which this project cannot work without. Ingestion checks for that column and stops with an explanation if it is missing.
 
 ### LLM backends
 
@@ -119,3 +129,9 @@ make test    # no network or API key required; uses synthetic data
 ```
 
 CI runs the tests plus an end-to-end smoke run of the pipeline and eval harness, and gates on the exact-match SQL route and routing accuracy. Retrieval quality is deliberately **not** gated on synthetic data.
+
+## Troubleshooting
+
+- **`pip` tries to build `pyarrow` and fails (needs a Rust compiler):** your pip is too old. Run `python -m pip install --upgrade pip` and retry.
+- **"PyTorch was not found" / models will not load (Intel Macs):** the last torch release for Intel Macs is 2.2.2, which needs older companions. After `make install`, run `pip install "numpy<2" "transformers<4.50" "sentence-transformers<4"`. Do not re-run `make install` afterwards.
+- **The first Python import after installing seems to hang:** large freshly installed libraries can take a few minutes to load the first time on macOS. Later runs are fast.
