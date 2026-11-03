@@ -19,12 +19,28 @@ def main(argv=None):
     ap.add_argument("--candidates", type=Path, default=Path("eval/candidates.jsonl"))
     ap.add_argument("--out", type=Path, default=Path("eval/goldset.jsonl"))
     ap.add_argument("--db", type=Path, default=DB_PATH)
+    ap.add_argument("--decisions", type=Path, default=None,
+                    help='JSON {"reviewer": str, "reject": [ids], "edit": {id: question}}; every other '
+                         "unverified retrieval item is accepted. Recorded as reviewed_by in the output.")
     args = ap.parse_args(argv)
 
     items = [json.loads(line) for line in args.candidates.read_text().splitlines() if line.strip()]
     con = duckdb.connect(str(args.db), read_only=True)
     kept: list[dict] = []
     todo = [i for i in items if not i["verified"]]
+    if args.decisions:
+        dec = json.loads(args.decisions.read_text())
+        reject, edit = set(map(str, dec.get("reject", []))), {str(k): v for k, v in dec.get("edit", {}).items()}
+        for it in todo:
+            cid = it["gold_ids"][0]
+            if cid in reject:
+                continue
+            if cid in edit:
+                it["question"] = edit[cid]
+            it["verified"] = True
+            it["reviewed_by"] = dec.get("reviewer", "unspecified")
+            kept.append(it)
+        todo = []
     for n, it in enumerate(todo, start=1):
         cid = it["gold_ids"][0]
         row = con.execute(
@@ -45,6 +61,7 @@ def main(argv=None):
         if c == "e":
             it["question"] = input("New question: ").strip() or it["question"]
         it["verified"] = True
+        it["reviewed_by"] = "user"
         kept.append(it)
 
     final = [i for i in items if i["verified"]] + kept

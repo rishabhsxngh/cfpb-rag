@@ -102,3 +102,26 @@ def test_goldset_export_and_drafted_roundtrip(tmp_path, env):
     retr = [i for i in items if i["type"] == "retrieval"]
     assert len(retr) == 10 and all(not i["verified"] for i in retr)
     assert {i["gold_ids"][0] for i in retr} == {r["id"] for r in rows}
+
+
+def test_review_decisions_applies_accept_reject_and_records_reviewer(tmp_path, env):
+    import json
+    from cfpb_rag.eval import build_goldset, review
+
+    exp = tmp_path / "to_draft.jsonl"
+    build_goldset.main(["--db", str(env["db"]), "--export-complaints", "6", "--export-path", str(exp)])
+    rows = [json.loads(line) for line in exp.read_text().splitlines()]
+    drafted = tmp_path / "d.jsonl"
+    drafted.write_text("\n".join(json.dumps({"id": r["id"], "question": f"Question number {i} about {r['issue']}?"})
+                                 for i, r in enumerate(rows)))
+    cand = tmp_path / "c.jsonl"
+    build_goldset.main(["--db", str(env["db"]), "--drafted", str(drafted), "--out", str(cand), "--n-aggregate", "2"])
+    dec = tmp_path / "dec.json"
+    dec.write_text(json.dumps({"reviewer": "tester", "reject": [rows[0]["id"]], "edit": {rows[1]["id"]: "An edited question text?"}}))
+    out = tmp_path / "gold.jsonl"
+    review.main(["--candidates", str(cand), "--out", str(out), "--db", str(env["db"]), "--decisions", str(dec)])
+    items = [json.loads(line) for line in out.read_text().splitlines()]
+    retr = [i for i in items if i["type"] == "retrieval"]
+    assert len(retr) == 5 and rows[0]["id"] not in {i["gold_ids"][0] for i in retr}
+    assert all(i["reviewed_by"] == "tester" for i in retr)
+    assert any(i["question"] == "An edited question text?" for i in retr)
