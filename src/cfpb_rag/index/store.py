@@ -40,9 +40,14 @@ def build_index(
     texts = [doc_text(r, meta_in_text) for r in docs.to_dict("records")]
     embedder = make_embedder(embedder_spec)
     embedder.fit(texts)
-    matrix = np.vstack(
-        [embedder.encode(texts[i : i + 1024], batch_size=batch_size) for i in range(0, len(texts), 1024)]
-    )
+    parts = []
+    for i in range(0, len(texts), 1024):
+        parts.append(embedder.encode(texts[i : i + 1024], batch_size=batch_size))
+        done = min(i + 1024, len(texts))
+        if (i // 1024) % 5 == 0 or done == len(texts):
+            print(f"  embedded {done:,} / {len(texts):,} complaints "
+                  f"({time.perf_counter() - t0:,.0f}s)", flush=True)
+    matrix = np.vstack(parts)
     bm25 = BM25().fit(texts)
 
     index_dir = Path(index_dir)
