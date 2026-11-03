@@ -17,11 +17,13 @@ def main(argv=None) -> None:
     s.add_argument("--out", type=Path, default=RAW_DIR / "complaints.csv")
     s.add_argument("--n", type=int, default=3000)
 
-    sub.add_parser("download", help="Download the real CFPB complaint CSV")
+    d = sub.add_parser("download", help="Download real complaint data")
+    d.add_argument("--source", choices=["hf", "cfpb"], default="hf",
+                   help="hf = Parquet mirror on Hugging Face (default, ~1 GB); cfpb = official zip")
 
     i = sub.add_parser("ingest", help="Clean the CSV into DuckDB and write a quality report")
     i.add_argument("--csv", type=Path, default=None,
-                   help="CSV or the CFPB .zip (default: data/raw/complaints.csv.zip or .csv)")
+                   help="CSV, CFPB .zip, or folder of Parquet files (default: data/raw/hf, then complaints.csv.zip, then .csv)")
     i.add_argument("--products", default=",".join(DEFAULT_PRODUCT_GROUPS))
     i.add_argument("--since", default=DEFAULT_SINCE)
     i.add_argument("--min-words", type=int, default=20)
@@ -45,12 +47,16 @@ def main(argv=None) -> None:
         from .ingest.sample import generate_sample
         print(f"Wrote SYNTHETIC data to {generate_sample(args.out, args.n)}")
     elif args.cmd == "download":
-        from .ingest.download import download
-        download()
+        if args.source == "hf":
+            from .ingest.download import download_hf
+            download_hf()
+        else:
+            from .ingest.download import download
+            download()
     elif args.cmd == "ingest":
         from .ingest.clean import build_database
         src = args.csv or next(
-            (p for p in (RAW_DIR / "complaints.csv.zip", RAW_DIR / "complaints.csv") if p.exists()), None)
+            (p for p in (RAW_DIR / "hf", RAW_DIR / "complaints.csv.zip", RAW_DIR / "complaints.csv") if p.exists()), None)
         if src is None:
             raise SystemExit(f"No input file found. Put the CFPB zip at {RAW_DIR / 'complaints.csv.zip'} "
                              "(run `cfpb-rag download` for instructions) or pass --csv.")

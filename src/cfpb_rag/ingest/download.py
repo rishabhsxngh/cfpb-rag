@@ -1,6 +1,6 @@
 """Download the public CFPB Consumer Complaint Database CSV.
 
-CFPB's file server may refuse scripted downloads (HTTP 403). If that happens, download the
+CFPB's own file server refuses scripted downloads (HTTP 403); `download_hf` is the default route. To use the CFPB file instead, download the
 "All complaint data" zip in a browser and save it as data/raw/complaints.csv.zip. The ingest
 step reads the zip directly, so it does not need to be unzipped.
 """
@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from ..config import CFPB_URL, RAW_DIR
+from ..config import CFPB_URL, HF_REPO, RAW_DIR
 
 MANUAL_STEPS = """
 The CFPB server refused the scripted download. Download it in your browser instead:
@@ -20,6 +20,21 @@ The CFPB server refused the scripted download. Download it in your browser inste
      (keep it zipped; the ingest step reads the zip directly)
 Then run: cfpb-rag ingest --max-rows 60000
 """
+
+
+def download_hf(dest_dir: Path = RAW_DIR, repo: str = HF_REPO) -> Path:
+    """Fetch the Parquet shards of the Hugging Face mirror (about 1 GB). Resumes if interrupted."""
+    from huggingface_hub import snapshot_download
+
+    dest = dest_dir / "hf"
+    print(f"Downloading Parquet shards from Hugging Face dataset {repo} to {dest} ...")
+    snapshot_download(repo_id=repo, repo_type="dataset", local_dir=str(dest),
+                      allow_patterns=["data/*.parquet", "metadata/*", "README.md"])
+    n = len(list(dest.rglob("*.parquet")))
+    if n == 0:
+        raise SystemExit(f"No Parquet files were downloaded from {repo}.")
+    print(f"Done: {n} files in {dest}")
+    return dest
 
 
 def download(dest_dir: Path = RAW_DIR, url: str = CFPB_URL, force: bool = False) -> Path:

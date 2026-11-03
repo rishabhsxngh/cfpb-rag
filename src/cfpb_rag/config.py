@@ -12,6 +12,8 @@ INDEX_DIR = Path(os.environ.get("CFPB_INDEX_DIR", DATA_DIR / "index"))
 CACHE_DIR = DATA_DIR / "cache"
 
 CFPB_URL = "https://files.consumerfinance.gov/ccdb/complaints.csv.zip"
+# Parquet mirror of the same public database, hosted on Hugging Face (not blocked like CFPB's server).
+HF_REPO = "Mouwiya/cfpb-consumer-complaints"
 
 # The slice of the CFPB database the assistant covers. Kept narrow on purpose so
 # retrieval quality is measurable and the evaluation set stays tractable.

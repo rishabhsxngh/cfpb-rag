@@ -51,3 +51,19 @@ def test_max_rows_is_reproducible(csv, tmp_path):
     build_database(csv, tmp_path / "1.duckdb", max_rows=80, seed=5, chunksize=200)
     build_database(csv, tmp_path / "2.duckdb", max_rows=80, seed=5, chunksize=200)
     assert _rows(tmp_path / "1.duckdb") == _rows(tmp_path / "2.duckdb")
+
+
+def test_parquet_folder_matches_csv_input(csv, tmp_path):
+    from cfpb_rag.ingest.clean import COLMAP, PARQUET_COLMAP
+    inv = {v: k for k, v in PARQUET_COLMAP.items()}
+    df = pd.read_csv(csv, dtype=str, keep_default_na=False)
+    df = df.rename(columns={k: inv[v] for k, v in COLMAP.items()})
+    d = tmp_path / "hf" / "data"
+    d.mkdir(parents=True)
+    half = len(df) // 2
+    df.iloc[:half].to_parquet(d / "complaints-00000.parquet")
+    df.iloc[half:].to_parquet(d / "complaints-00001.parquet")
+    a = build_database(csv, tmp_path / "a.duckdb")
+    b = build_database(tmp_path / "hf", tmp_path / "b.duckdb")
+    assert a["rows_final"] == b["rows_final"]
+    assert _rows(tmp_path / "a.duckdb") == _rows(tmp_path / "b.duckdb")

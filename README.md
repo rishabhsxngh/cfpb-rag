@@ -24,7 +24,7 @@ Requires Python 3.10+.
 
 ```bash
 make install                 # pip install -e ".[st,app,dev]"
-make data                    # real CFPB data -> DuckDB (if the download is refused, see "Getting the data")
+make data                    # real CFPB data (Parquet mirror, ~1 GB) -> DuckDB; see "Getting the data"
 make index                   # build the embedding + BM25 index
 export ANTHROPIC_API_KEY=...  # optional; without it a deterministic test stub is used (see below)
 cfpb-rag ask "Which issue is most common for Mortgage complaints?"
@@ -36,13 +36,9 @@ No internet or key? `make sample` builds a **synthetic** dataset so you can try 
 
 ### Getting the data
 
-CFPB's file server may refuse scripted downloads (HTTP 403), so the reliable route is a browser:
+`make data` runs `cfpb-rag download` (about 1 GB of Parquet shards from a [Hugging Face mirror](https://huggingface.co/datasets/Mouwiya/cfpb-consumer-complaints) of the public CFPB database; resumable) and then `cfpb-rag ingest`, which filters to Mortgage and Credit reporting complaints that have narratives and keeps a reproducible random sample of 60,000.
 
-1. Open the [complaint search tool](https://www.consumerfinance.gov/data-research/consumer-complaints/) and click **Export data**.
-2. Choose **All complaint data** (CSV ZIP) and save it as `data/raw/complaints.csv.zip`. It is a large file (several GB), and it stays zipped: ingestion reads the zip directly.
-3. `cfpb-rag ingest --max-rows 60000` filters to Mortgage and Credit reporting complaints that have narratives and keeps a reproducible random sample of 60,000.
-
-Do not use the **filtered** export: it is capped at 100,000 complaints and the file we tried had no narrative column, which this project cannot work without. Ingestion checks for that column and stops with an explanation if it is missing.
+The mirror is third-party, so it is only as current and complete as its maintainer keeps it. `data/quality_report.json` records the date range and row counts that were actually used; cite those. To use the official file instead, download **All complaint data** (CSV ZIP) from the [CFPB search tool](https://www.consumerfinance.gov/data-research/consumer-complaints/) in a browser (CFPB's server returns HTTP 403 to scripts), save it as `data/raw/complaints.csv.zip`, remove `data/raw/hf`, and run `cfpb-rag ingest --max-rows 60000`. Do not use the **filtered** export: it is capped at 100,000 complaints and the file we tried had no narrative column. Ingestion checks for that column and stops with an explanation if it is missing.
 
 ### LLM backends
 

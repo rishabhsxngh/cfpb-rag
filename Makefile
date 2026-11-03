@@ -3,9 +3,9 @@
 install:
 	pip install -e ".[st,app,dev]"
 
-# Real data. CFPB may refuse scripted downloads (HTTP 403): if `cfpb-rag download` says so,
-# download "All complaint data" in a browser and save it as data/raw/complaints.csv.zip first.
-# The zip is read directly (no unzipping), and --max-rows keeps a 60k random sample.
+# Real data. Default source is the Parquet mirror on Hugging Face (about 1 GB). If you would
+# rather use the official CFPB zip, save it as data/raw/complaints.csv.zip and run only the
+# ingest line (data/raw/hf takes priority if both exist, so delete it first).
 data:
 	cfpb-rag download
 	cfpb-rag ingest --products "Mortgage,Credit reporting" --since 2024-01-01 --max-rows 60000

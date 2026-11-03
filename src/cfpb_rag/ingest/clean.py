@@ -1,10 +1,11 @@
-"""Load the raw CFPB CSV (or the .zip of it) into DuckDB with explicit quality checks.
+"""Load raw CFPB complaints into DuckDB with explicit quality checks.
 
 Every row that is dropped is counted by reason, and the counts are written to
 a JSON quality report next to the database so the cleaning is auditable.
 
-The input can be the plain CSV or the zip from CFPB's "All complaint data"
-download. A zip is streamed directly, so it never has to be unzipped to disk.
+The input can be the plain CSV, the zip from CFPB's "All complaint data" download (streamed
+directly, never unzipped to disk), or a folder / file of Parquet shards from a Hugging Face
+mirror (snake_case column names). All three go through the same cleaning code.
 """
 from __future__ import annotations
 
@@ -33,13 +34,46 @@ COLMAP = {
 REQUIRED = ["Date received", "Product", "Issue", "Consumer complaint narrative",
             "Company", "Complaint ID"]
 
+# Column names used by the Parquet mirror on Hugging Face -> our internal names.
+PARQUET_COLMAP = {
+    "date_received": "date_received",
+    "product": "product",
+    "sub_product": "sub_product",
+    "issue": "issue",
+    "sub_issue": "sub_issue",
+    "consumer_complaint_narrative": "narrative",
+    "company": "company",
+    "state": "state",
+    "company_response_to_consumer": "company_response",
+    "complaint_id": "complaint_id",
+}
+PARQUET_REQUIRED = ["date_received", "product", "issue", "consumer_complaint_narrative",
+                    "company", "complaint_id"]
+
 # CFPB redacts personal details as runs of X (e.g. "XXXX", "XX/XX/2024").
 _REDACTION_RE = re.compile(r"X{2,}")
 _WS_RE = re.compile(r"\s+")
 
 
+def _parquet_files(path: Path) -> list[Path]:
+    path = Path(path)
+    return sorted(path.rglob("*.parquet")) if path.is_dir() else [path]
+
+
+def _is_parquet(path: Path) -> bool:
+    path = Path(path)
+    return path.suffix == ".parquet" or (path.is_dir() and any(path.rglob("*.parquet")))
+
+
 def check_columns(csv_path: Path) -> None:
     """Fail early, with a useful message, if the file cannot support the project."""
+    if _is_parquet(csv_path):
+        import pyarrow.parquet as pq
+        header = list(pq.ParquetFile(_parquet_files(csv_path)[0]).schema_arrow.names)
+        missing = [c for c in PARQUET_REQUIRED if c not in header]
+        if missing:
+            raise ValueError(f"{csv_path} is missing required column(s): {missing}.")
+        return
     header = list(pd.read_csv(csv_path, nrows=0).columns)
     missing = [c for c in REQUIRED if c not in header]
     if missing:
@@ -49,6 +83,26 @@ def check_columns(csv_path: Path) -> None:
                     "narrative text. The filtered 'Export data' CSV on the CFPB site may omit "
                     "them; use the full 'All complaint data' zip instead.")
         raise ValueError(f"{csv_path} is missing required column(s): {missing}.{hint}")
+
+
+def _iter_chunks(path: Path, chunksize: int):
+    """Yield DataFrames of string columns with our internal column names."""
+    if _is_parquet(path):
+        import pyarrow.parquet as pq
+        cols = list(PARQUET_COLMAP)
+        for f in _parquet_files(path):
+            pf = pq.ParquetFile(f)
+            have = [c for c in cols if c in pf.schema_arrow.names]
+            for batch in pf.iter_batches(batch_size=chunksize, columns=have):
+                df = batch.to_pandas()
+                for c in df.columns:
+                    df[c] = df[c].astype("string").fillna("").astype(object)
+                yield df.rename(columns=PARQUET_COLMAP)
+        return
+    reader = pd.read_csv(path, usecols=lambda c: c in COLMAP, dtype=str,
+                         chunksize=chunksize, keep_default_na=False)
+    for chunk in reader:
+        yield chunk.rename(columns=COLMAP)
 
 
 def build_database(
@@ -94,15 +148,7 @@ def build_database(
         df = pd.concat(frames, ignore_index=True)
         return [df.nsmallest(max_rows, "_k")]
 
-    reader = pd.read_csv(
-        csv_path,
-        usecols=lambda c: c in COLMAP,
-        dtype=str,
-        chunksize=chunksize,
-        keep_default_na=False,
-    )
-    for n_chunk, chunk in enumerate(reader, start=1):
-        chunk = chunk.rename(columns=COLMAP)
+    for n_chunk, chunk in enumerate(_iter_chunks(csv_path, chunksize), start=1):
         report["rows_read"] += len(chunk)
 
         prod_lower = chunk["product"].str.lower()
