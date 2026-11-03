@@ -70,14 +70,22 @@ With `--with-llm`: citation validity (share of citations pointing at retrieved c
 
 ### Results
 
-> Fill this in from `eval/results/latest.md` after running on the real data. The numbers below are intentionally empty: results from synthetic data or an unreviewed gold set should not be published.
+Run on 2026-11-03 against a 60,000-complaint index (30,000 Mortgage, 30,000 Credit reporting, January 2024 to June 2026) and the gold set in `eval/goldset.jsonl` (55 retrieval, 24 aggregate, 20 unanswerable questions). Full output: `eval/results/latest.md`.
 
-| Retrieval | hit@5 | recall@10 | MRR |
-|---|---|---|---|
-| dense | | | |
-| BM25 | | | |
-| hybrid | | | |
-| hybrid + rerank | | | |
+| Retrieval (n = 55) | hit@1 | hit@5 | hit@10 | MRR |
+|---|---|---|---|---|
+| dense (MiniLM embeddings) | 0.382 | 0.527 | 0.618 | 0.457 |
+| BM25 | 0.527 | 0.655 | 0.709 | 0.584 |
+| hybrid (RRF) | 0.473 | 0.673 | 0.709 | 0.563 |
+| hybrid + cross-encoder rerank | 0.564 | 0.673 | 0.800 | 0.610 |
+
+- **Reranked hybrid retrieval is the best configuration** on hit@10 (0.800 vs 0.618 for dense alone) and MRR (0.610 vs 0.457).
+- **Hybrid beats dense alone, but not BM25 by a meaningful margin.** At hit@5 the difference between hybrid and BM25 is one question out of 55. The questions were drafted from the complaints and share vocabulary with them, which favors keyword search (see limitations).
+- **Routing and the SQL route score 1.000** (79 questions routed; 24 of 24 aggregate questions match the SQL gold exactly). The aggregate questions are templated, so this shows the route works, not that the router handles free-form phrasing.
+- **With 55 questions, differences of a few points are within noise** (a 95% interval on a proportion near 0.6 is roughly plus or minus 13 points). Only the larger gaps, such as reranked hybrid vs dense, are worth reporting.
+- Not yet measured: abstention precision/recall, citation validity, and LLM-judged answer quality. These need an `ANTHROPIC_API_KEY` (`make eval-llm`).
+
+**How the gold set was made.** The 55 retrieval questions were drafted by an LLM (Claude) from sampled complaints, then checked against their source complaints in a second pass by the same model, which rejected 5 as too generic. Every item records its reviewer in `reviewed_by`. A manual spot-check by the author is the planned next step; until it is done, describe the set as LLM-drafted and LLM-reviewed.
 
 Ablations worth running and writing up (`cfpb-rag index --embedder st:<model>` / `--no-meta-in-text`): embedding model, metadata in the embedded text, k, reranking, hybrid vs single retriever. A flat or negative result with a clear explanation is a fine result.
 
@@ -104,7 +112,7 @@ src/cfpb_rag/
   eval/        gold-set builder, review CLI, metrics, LLM judge, evaluation runner
   api/         FastAPI service
 app/           Streamlit UI
-tests/         41 tests: ingestion invariants, SQL safety, retrieval, guardrails, API
+tests/         51 tests: ingestion invariants, SQL safety, retrieval, guardrails, API
 ```
 
 ## Deployment
