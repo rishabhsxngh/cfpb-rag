@@ -67,3 +67,18 @@ def test_parquet_folder_matches_csv_input(csv, tmp_path):
     b = build_database(tmp_path / "hf", tmp_path / "b.duckdb")
     assert a["rows_final"] == b["rows_final"]
     assert _rows(tmp_path / "a.duckdb") == _rows(tmp_path / "b.duckdb")
+
+
+def test_parquet_with_timezone_aware_dates(csv, tmp_path):
+    from cfpb_rag.ingest.clean import COLMAP, PARQUET_COLMAP
+    inv = {v: k for k, v in PARQUET_COLMAP.items()}
+    df = pd.read_csv(csv, dtype=str, keep_default_na=False)
+    df = df.rename(columns={k: inv[v] for k, v in COLMAP.items()})
+    df["date_received"] = pd.to_datetime(df["date_received"]).dt.strftime("%Y-%m-%dT00:00:00+00:00")
+    d = tmp_path / "hf"
+    d.mkdir()
+    df.to_parquet(d / "complaints-00000.parquet")
+    a = build_database(csv, tmp_path / "a.duckdb")
+    b = build_database(d, tmp_path / "b.duckdb")
+    assert a["rows_final"] == b["rows_final"]
+    assert a["profile"]["date_min"] == b["profile"]["date_min"]

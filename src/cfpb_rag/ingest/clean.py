@@ -162,7 +162,9 @@ def build_database(
         report["dropped"]["outside_product_slice"] += n - len(chunk)
 
         n = len(chunk)
-        chunk = chunk.assign(date_received=pd.to_datetime(chunk["date_received"], errors="coerce"))
+        # Some sources carry a timezone ("...+00:00"); normalize to naive dates.
+        dates = pd.to_datetime(chunk["date_received"], errors="coerce", utc=True).dt.tz_localize(None)
+        chunk = chunk.assign(date_received=dates)
         chunk = chunk[chunk["date_received"] >= since_ts]
         report["dropped"]["unparseable_or_old_date"] += n - len(chunk)
 
