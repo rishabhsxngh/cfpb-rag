@@ -1,0 +1,43 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - name: Unit and integration tests (synthetic data, no network, no API key)
+        run: pytest -q
+      - name: Smoke-test the full pipeline and eval harness on synthetic data
+        env:
+          CFPB_DATA_DIR: ${{ runner.temp }}/data
+        run: |
+          python -m cfpb_rag.cli sample --n 2000
+          python -m cfpb_rag.cli ingest
+          python -m cfpb_rag.cli index --embedder tfidf-lsa
+          python -m cfpb_rag.eval.build_goldset --llm stub --allow-template --auto-verify \
+            --n-retrieval 30 --n-aggregate 15 --out ${{ runner.temp }}/gold.jsonl
+          # Gate on the exact-match SQL route and routing only. Retrieval numbers on synthetic,
+          # templated data say nothing about real quality, so they are not gated here.
+          python -m cfpb_rag.eval.run_eval --gold ${{ runner.temp }}/gold.jsonl \
+            --out ${{ runner.temp }}/results
+          python - <<'PY'
+          import json, os
+          s = json.load(open(os.environ["RUNNER_TEMP"] + "/results/summary.json"))
+          assert s["aggregate"]["top1_match"] == 1.0, s["aggregate"]
+          assert s["routing"][0]["accuracy"] == 1.0, s["routing"]
+          PY
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t cfpb-rag .
