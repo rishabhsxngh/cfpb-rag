@@ -27,6 +27,7 @@ def main(argv=None):
     items = [json.loads(line) for line in args.candidates.read_text().splitlines() if line.strip()]
     con = duckdb.connect(str(args.db), read_only=True)
     kept: list[dict] = []
+    already_verified = [i for i in items if i["verified"]]  # snapshot before items are mutated
     todo = [i for i in items if not i["verified"]]
     if args.decisions:
         dec = json.loads(args.decisions.read_text())
@@ -64,7 +65,7 @@ def main(argv=None):
         it["reviewed_by"] = "user"
         kept.append(it)
 
-    final = [i for i in items if i["verified"]] + kept
+    final = already_verified + kept
     for idx, it in enumerate([i for i in final if i["type"] == "retrieval"], start=1):
         it["id"] = f"r{idx:03d}"
     args.out.parent.mkdir(parents=True, exist_ok=True)

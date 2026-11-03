@@ -125,3 +125,23 @@ def test_review_decisions_applies_accept_reject_and_records_reviewer(tmp_path, e
     assert len(retr) == 5 and rows[0]["id"] not in {i["gold_ids"][0] for i in retr}
     assert all(i["reviewed_by"] == "tester" for i in retr)
     assert any(i["question"] == "An edited question text?" for i in retr)
+
+
+def test_review_output_has_no_duplicate_ids(tmp_path, env):
+    import json
+    from cfpb_rag.eval import build_goldset, review
+
+    exp = tmp_path / "e.jsonl"
+    build_goldset.main(["--db", str(env["db"]), "--export-complaints", "4", "--export-path", str(exp)])
+    rows = [json.loads(line) for line in exp.read_text().splitlines()]
+    d = tmp_path / "d.jsonl"
+    d.write_text("\n".join(json.dumps({"id": r["id"], "question": f"Distinct question {i} here?"})
+                           for i, r in enumerate(rows)))
+    cand = tmp_path / "c.jsonl"
+    build_goldset.main(["--db", str(env["db"]), "--drafted", str(d), "--out", str(cand)])
+    dec = tmp_path / "dec.json"
+    dec.write_text(json.dumps({"reviewer": "t"}))
+    out = tmp_path / "g.jsonl"
+    review.main(["--candidates", str(cand), "--out", str(out), "--db", str(env["db"]), "--decisions", str(dec)])
+    ids = [json.loads(line)["id"] for line in out.read_text().splitlines()]
+    assert len(ids) == len(set(ids))
